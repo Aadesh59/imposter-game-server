@@ -1,167 +1,190 @@
-// server.js
 const express = require('express');
-const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
+const cors = require('cors');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ✅ Correct CORS setup
-app.use(cors({
-  origin: "https://aadeshghimire.free.nf", // allow only your frontend
-  methods: ["GET", "POST", "OPTIONS"],
-  allowedHeaders: ["Content-Type"],
-}));
-
-// ✅ Handle preflight requests
-app.options('*', cors({
-  origin: "https://aadeshghimire.free.nf",
-  methods: ["GET", "POST", "OPTIONS"],
-  allowedHeaders: ["Content-Type"],
-}));
+// ====================
+// CORS FIX for frontend
+// ====================
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "https://aadeshghimire.free.nf"); // your frontend domain
+  res.header("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.header("Access-Control-Allow-Headers", "Content-Type");
+  if (req.method === "OPTIONS") return res.sendStatus(200);
+  next();
+});
 
 app.use(express.json());
 
+// ====================
 // In-memory game storage
-let rooms = {};
+// ====================
+let rooms = {}; // { roomId: { players: [], phase: 'lobby', currentRound: 1, gameStarted: false, imposterId: null, votes: {}, winner: null } }
 
-// Utility: generate 4-letter room code
-function generateRoomCode() {
-  const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-  let code = "";
-  for (let i = 0; i < 4; i++) {
-    code += letters.charAt(Math.floor(Math.random() * letters.length));
-  }
-  return code;
-}
-
-// Create Lobby
-app.post('/create-lobby', (req, res) => {
-  const { playerId, playerName } = req.body;
-  const roomId = generateRoomCode();
-
+// ====================
+// Helper Functions
+// ====================
+function createRoom(playerId, playerName) {
+  const roomId = Math.random().toString(36).substring(2, 8).toUpperCase();
   rooms[roomId] = {
-    id: roomId,
-    hostId: playerId,
     players: [{ id: playerId, name: playerName, isHost: true }],
-    gameStarted: false,
     phase: 'lobby',
     currentRound: 1,
+    gameStarted: false,
     imposterId: null,
     votes: {},
     winner: null
   };
+  return roomId;
+}
 
+function joinRoom(roomId, playerId, playerName) {
+  const room = rooms[roomId];
+  if (!room) throw new Error('Room not found');
+  room.players.push({ id: playerId, name: playerName, isHost: false });
+}
+
+// ====================
+// Routes
+// ====================
+
+// Create lobby
+app.post('/create-lobby', (req, res) => {
+  const { playerId, playerName } = req.body;
+  const roomId = createRoom(playerId, playerName);
   res.json({ roomId });
 });
 
-// Join Lobby
+// Join lobby
 app.post('/join-lobby', (req, res) => {
   const { playerId, playerName, roomId } = req.body;
-  const room = rooms[roomId];
-
-  if (!room) return res.status(404).json({ error: "Room not found" });
-
-  room.players.push({ id: playerId, name: playerName, isHost: false });
-  res.json({ success: true });
+  try {
+    joinRoom(roomId, playerId, playerName);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
-// Leave Lobby
+// Leave lobby
 app.post('/leave-lobby', (req, res) => {
   const { playerId, roomId } = req.body;
   const room = rooms[roomId];
+  if (!room) return res.status(400).json({ error: 'Room not found' });
+  room.players = room.players.filter(p => p.id !== playerId);
 
-  if (room) {
-    room.players = room.players.filter(p => p.id !== playerId);
-    if (room.players.length === 0) {
-      delete rooms[roomId]; // delete empty room
-    }
+  // If host left, assign new host
+  if (!room.players.some(p => p.isHost) && room.players.length > 0) {
+    room.players[0].isHost = true;
   }
+
   res.json({ success: true });
 });
 
-// Start Game
+// Start game
 app.post('/start-game', (req, res) => {
-  const { roomId } = req.body;
+  const { roomId, playerId } = req.body;
   const room = rooms[roomId];
+  if (!room) return res.status(400).json({ error: 'Room not found' });
+  const host = room.players.find(p => p.id === playerId && p.isHost);
+  if (!host) return res.status(400).json({ error: 'Only host can start the game' });
 
-  if (!room) return res.status(404).json({ error: "Room not found" });
+  room.gameStarted = true;
+  room.phase = 'words';
+  room.imposterId = room.players[Math.floor(Math.random() * room.players.length)].id;
 
-  // Pick imposter randomly
-  const imposter = room.players[Math.floor(Math.random() * room.players.length)];
-  room.imposterId = imposter.id;
-
-  // Assign words
-  const wordPairs = [
-    ["CAT", "DOG"],
-    ["APPLE", "ORANGE"],
-    ["CAR", "BIKE"]
-  ];
-  const chosenPair = wordPairs[Math.floor(Math.random() * wordPairs.length)];
-  const [civilianWord, imposterWord] = chosenPair;
-
+  // Assign random words to all players
   room.players.forEach(player => {
-    player.word = player.id === room.imposterId ? imposterWord : civilianWord;
-    player.clue = null;
+    player.word = 'apple'; // You can randomize word list if you want
+    player.clue = '';
   });
 
-  room.phase = "words";
-  room.gameStarted = true;
   res.json({ success: true });
 });
 
-// Submit Clue
+// Submit clue
 app.post('/submit-clue', (req, res) => {
   const { roomId, playerId, clue } = req.body;
   const room = rooms[roomId];
-  if (!room) return res.status(404).json({ error: "Room not found" });
+  if (!room) return res.status(400).json({ error: 'Room not found' });
 
   const player = room.players.find(p => p.id === playerId);
-  if (player) {
-    player.clue = clue; // save clue
+  if (!player) return res.status(400).json({ error: 'Player not found' });
+
+  player.clue = clue;
+
+  // Move to voting phase if all clues submitted
+  if (room.players.every(p => p.clue)) {
+    room.phase = 'voting';
   }
+
   res.json({ success: true });
 });
 
-// Submit Vote
+// Vote
 app.post('/vote', (req, res) => {
   const { roomId, playerId, targetPlayerId } = req.body;
   const room = rooms[roomId];
-  if (!room) return res.status(404).json({ error: "Room not found" });
+  if (!room) return res.status(400).json({ error: 'Room not found' });
 
   room.votes[targetPlayerId] = (room.votes[targetPlayerId] || 0) + 1;
-  res.json({ success: true });
-});
 
-// New Game
-app.post('/new-game', (req, res) => {
-  const { roomId } = req.body;
-  const room = rooms[roomId];
-
-  if (room) {
-    room.phase = 'lobby';
-    room.currentRound = 1;
-    room.votes = {};
-    room.winner = null;
-    room.imposterId = null;
-    room.players.forEach(p => {
-      p.word = null;
-      p.clue = null;
-    });
-    room.gameStarted = false;
+  // Check if all votes submitted
+  if (Object.values(room.votes).reduce((a, b) => a + b, 0) >= room.players.length - 1) {
+    // Determine winner or next round
+    const mostVoted = Object.entries(room.votes).sort((a, b) => b[1] - a[1])[0][0];
+    if (mostVoted === room.imposterId) {
+      room.phase = 'gameOver';
+      room.winner = 'civilians';
+    } else if (room.currentRound < 3) {
+      room.currentRound += 1;
+      room.phase = 'words';
+      room.votes = {};
+      room.players.forEach(p => (p.clue = '')); // reset clues
+    } else {
+      room.phase = 'gameOver';
+      room.winner = 'imposter';
+    }
   }
 
   res.json({ success: true });
 });
 
-// Get Room State
+// New game
+app.post('/new-game', (req, res) => {
+  const { roomId, playerId } = req.body;
+  const room = rooms[roomId];
+  if (!room) return res.status(400).json({ error: 'Room not found' });
+  const host = room.players.find(p => p.id === playerId && p.isHost);
+  if (!host) return res.status(400).json({ error: 'Only host can start new game' });
+
+  room.phase = 'lobby';
+  room.currentRound = 1;
+  room.gameStarted = false;
+  room.imposterId = null;
+  room.votes = {};
+  room.winner = null;
+  room.players.forEach(p => {
+    p.word = '';
+    p.clue = '';
+  });
+
+  res.json({ success: true });
+});
+
+// Polling / get room state
 app.get('/room/:roomId', (req, res) => {
   const room = rooms[req.params.roomId];
-  if (!room) return res.status(404).json({ error: "Room not found" });
+  if (!room) return res.status(400).json({ error: 'Room not found' });
+
   res.json({ room });
 });
 
-// Start Server
+// ====================
+// Start server
+// ====================
 app.listen(PORT, () => {
-  console.log(`🎭 Imposter Game server running on port ${PORT}`);
+  console.log(`🎮 Imposter Game Server running on port ${PORT}`);
 });
