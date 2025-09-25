@@ -1,6 +1,5 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
-const cors = require('cors');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -9,7 +8,7 @@ const PORT = process.env.PORT || 3000;
 // CORS FIX for frontend
 // ====================
 app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "https://aadeshghimire.free.nf"); // your frontend domain
+  res.header("Access-Control-Allow-Origin", "https://aadeshghimire.free.nf"); // frontend domain
   res.header("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.header("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.sendStatus(200);
@@ -95,16 +94,16 @@ app.post('/start-game', (req, res) => {
   room.phase = 'words';
   room.imposterId = room.players[Math.floor(Math.random() * room.players.length)].id;
 
-  // Assign random words to all players
+  // Assign random words
   room.players.forEach(player => {
-    player.word = 'apple'; // You can randomize word list if you want
+    player.word = 'apple'; // You can randomize word list if needed
     player.clue = '';
   });
 
   res.json({ success: true });
 });
 
-// Submit clue
+// Submit clue (no auto-advance)
 app.post('/submit-clue', (req, res) => {
   const { roomId, playerId, clue } = req.body;
   const room = rooms[roomId];
@@ -114,39 +113,57 @@ app.post('/submit-clue', (req, res) => {
   if (!player) return res.status(400).json({ error: 'Player not found' });
 
   player.clue = clue;
-
-  // Move to voting phase if all clues submitted
-  if (room.players.every(p => p.clue)) {
-    room.phase = 'voting';
-  }
-
   res.json({ success: true });
 });
 
-// Vote
+// Vote (no auto-advance)
 app.post('/vote', (req, res) => {
   const { roomId, playerId, targetPlayerId } = req.body;
   const room = rooms[roomId];
   if (!room) return res.status(400).json({ error: 'Room not found' });
 
   room.votes[targetPlayerId] = (room.votes[targetPlayerId] || 0) + 1;
+  res.json({ success: true });
+});
 
-  // Check if all votes submitted
-  if (Object.values(room.votes).reduce((a, b) => a + b, 0) >= room.players.length - 1) {
-    // Determine winner or next round
-    const mostVoted = Object.entries(room.votes).sort((a, b) => b[1] - a[1])[0][0];
-    if (mostVoted === room.imposterId) {
-      room.phase = 'gameOver';
-      room.winner = 'civilians';
-    } else if (room.currentRound < 3) {
-      room.currentRound += 1;
+// Advance phase manually (host only)
+app.post('/advance-phase', (req, res) => {
+  const { roomId, playerId } = req.body;
+  const room = rooms[roomId];
+  if (!room) return res.status(400).json({ error: 'Room not found' });
+
+  const host = room.players.find(p => p.id === playerId && p.isHost);
+  if (!host) return res.status(400).json({ error: 'Only host can advance phase' });
+
+  switch (room.phase) {
+    case 'words':
+      room.phase = 'clues';
+      break;
+    case 'clues':
+      room.phase = 'voting';
+      break;
+    case 'voting':
+      // Tally votes
+      const mostVoted = Object.entries(room.votes).sort((a, b) => b[1] - a[1])[0];
+      if (mostVoted && mostVoted[0] === room.imposterId) {
+        room.phase = 'gameOver';
+        room.winner = 'civilians';
+      } else if (room.currentRound < 3) {
+        room.currentRound += 1;
+        room.phase = 'words';
+        room.votes = {};
+        room.players.forEach(p => p.clue = '');
+      } else {
+        room.phase = 'gameOver';
+        room.winner = 'imposter';
+      }
+      break;
+    case 'results':
+    case 'gameOver':
+      break;
+    default:
       room.phase = 'words';
-      room.votes = {};
-      room.players.forEach(p => (p.clue = '')); // reset clues
-    } else {
-      room.phase = 'gameOver';
-      room.winner = 'imposter';
-    }
+      break;
   }
 
   res.json({ success: true });
