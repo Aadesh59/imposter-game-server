@@ -6,11 +6,21 @@ const { v4: uuidv4 } = require('uuid');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+const cors = require('cors');
+
 app.use(cors({
-  origin: ["https://aadeshghimire.free.nf"], // allow your frontend
-  methods: ["GET", "POST"],
-  credentials: true
+  origin: "https://aadeshghimire.free.nf",  // allow your frontend
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type"],
 }));
+
+// Handle preflight requests for all routes
+app.options('*', cors({
+  origin: "https://aadeshghimire.free.nf",
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type"],
+}));
+
 app.use(express.json());
 
 // In-memory game storage
